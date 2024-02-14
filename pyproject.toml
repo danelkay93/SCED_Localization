@@ -1,0 +1,123 @@
+[project]
+requires-python = ">=3.12"
+
+
+[tool.poetry]
+name = "SCED_Localization"
+version = "0.2.0"
+description = "Automatically generates a localized version of the SCED TTS mod."
+authors = ["Rui Liu","Dan Elkayam <dan.elkayam@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+regex = "^2023.12.25"
+dropbox = "^11.36.2"
+beautifulsoup4 = "^4.12.3"
+bs4 = "^0.0.2"
+pillow = "^10.2.0"
+polib = "^1.2.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+
+[tool.ruff]
+cache-dir = ".cache/ruff"
+
+line-length = 100
+
+target-version = "py312"
+
+lint.select = [
+    "A",  # prevent using keywords that clobber python builtins
+    "B",  # bugbear: security warnings
+    "E",  # pycodestyle
+    "F",  # pyflakes
+    "N",  # pep8-naming
+    "ANN",  # annotations
+    "ASYNC",  # async/await
+    "S",  # Bandit
+    "FBT",
+    "DTZ",
+    "ISC",
+    "ICN",
+    "PIE",
+    "PYI",
+    "Q",
+    "RSE",
+    "RET",
+    "SLOT",
+    "TCH",
+    "PTH",
+    "LOG",
+    "RUF",
+    "C4",  # flake8-comprehensions
+    "ISC",  # implicit string concatenation
+    "UP",  # alert you when better syntax is available in your python version
+    "RUF",  # the ruff developer's own rules
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
+
+fix = true
+unsafe-fixes = true
+lint.extend-fixable = ["B"]
+lint.preview = true
+lint.ignore = ["ISC001"]
+# Enumerate all fixed violations.
+show-fixes = true
+
+#[tool.ruff.lint.flake8-quotes]
+#inline-quotes = 'double'
+
+[tool.ruff.lint.pep8-naming]
+classmethod-decorators = [
+    # Allow Pydantic's `@validator` decorator to trigger class method treatment.
+    "pydantic.validator",
+]
+
+#[tool.ruff.lint.pyupgrade]
+#
+#[tool.ruff.lint.isort]
+#force-sort-within-sections = true
+
+
+#fixable = [
+#    "F401",  # Remove unused imports.
+#    "NPY001",  # Fix numpy types, which are removed in 1.24.
+#    "RUF100",  # Remove unused noqa comments.
+#]
+#
+#ignore = []
+#
+### Allow fix for all enabled rules (when `--fix`) is provided.
+##fixable = ["ALL"]
+##unfixable = []
+#
+## Allow unused variables when underscore-prefixed.
+#dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+#
+#[tool.ruff.format]
+## Like Black, use double quotes for strings.
+#quote-style = "double"
+#
+## Like Black, indent with spaces, rather than tabs.
+#indent-style = "space"
+#
+## Like Black, respect magic trailing commas.
+#skip-magic-trailing-comma = false
+#
+## Like Black, automatically detect the appropriate line ending.
+#line-ending = "auto"
+#
+#[tool.ruff.lint.isort]
+#force-sort-within-sections = true
+#
+#[tool.ruff.lint.lint]
+## Like Black, use double quotes for strings.
+#quotes = "double"
