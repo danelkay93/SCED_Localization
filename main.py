@@ -1201,7 +1201,7 @@ def download_deck_image(url) -> Path:
 
 
 def crop_card_image(result_id, deck_image_filename):
-    cards_folder = f"{args.cache_dir}/cards"
+    cards_folder = Path(args.cache_dir) / CARDS_FOLDER_NAME
     Path(cards_folder).mkdir(parents=True, exist_ok=True)
     filename = f"{cards_folder}/{result_id}.png"
     if not os.path.isfile(filename):
@@ -1649,7 +1649,7 @@ def write_csv() -> None:
 def generate_images() -> None:
     # NOTE: Update SE font preferences before running the generation script.
     lang_code, _ = get_lang_code_region()
-    lang_preferences = f"translations/{lang_code}/preferences"
+    lang_preferences = Path(TRANSLATIONS_DIR_NAME) / lang_code / "preferences"
     print(f"Overwriting with {lang_preferences}...")
     overwrites = {}
     with open(lang_preferences, encoding="utf-8") as file:
