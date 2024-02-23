@@ -938,13 +938,13 @@ def get_se_card(result_id, card, metadata, image_filename, image_scale, image_mo
 from pathlib import Path
 
 
-def download_repo(repo_folder: str, repo: str) -> str:
+def download_repo(repo_folder: Path, repo: str) -> Path:
     if Path(repo_folder).is_dir():
         return repo_folder
     print(f"Cloning {repo}...")
     Path(args.repo_dir).mkdir(parents=True, exist_ok=True)
     repo_name = repo.split("/")[-1]
-    repo_folder = f"{args.repo_dir}/{repo_name}"
+    repo_folder = args.repo_dir / repo_name
     subprocess.run(["git", "clone", "--quiet", f"https://github.com/{repo}.git", repo_folder])
     return repo_folder
 
@@ -973,7 +973,7 @@ def download_card(ahdb_id):
             temp_card[prop] = old_card.get(prop, 0)
         return temp_card
 
-    ahdb_folder = f"{args.cache_dir}/ahdb"
+    ahdb_folder = Path(args.cache_dir) / "ahdb"
     Path(ahdb_folder).mkdir(parents=True, exist_ok=True)
     lang_code, _ = get_lang_code_region()
     filename = f"{ahdb_folder}/{lang_code}.json"
@@ -1187,7 +1187,7 @@ def decode_result_id(result_id):
     )
 
 
-def download_deck_image(url) -> str:
+def download_deck_image(url) -> Path:
     decks_folder = f"{args.cache_dir}/decks"
     Path(decks_folder).mkdir(parents=True, exist_ok=True)
     url_id = get_en_url_id(url)
@@ -1630,7 +1630,7 @@ def process_encounter_cards(callback, **kwargs) -> None:
 
 
 def write_csv() -> None:
-    data_dir = "SE_Generator/data"
+    data_dir = Path("SE_Generator/data")
     shutil.rmtree(data_dir, ignore_errors=True)
     Path(data_dir).mkdir(parents=True, exist_ok=True)
     for se_type in se_types:
