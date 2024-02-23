@@ -935,8 +935,8 @@ def get_se_card(result_id, card, metadata, image_filename, image_scale, image_mo
     return final_card
 
 
-def ensure_dir(dir) -> None:
-    os.makedirs(dir, exist_ok=True)
+from pathlib import Path
+
 
 
 def recreate_dir(dir) -> None:
@@ -948,7 +948,7 @@ def download_repo(repo_folder, repo):
     if Path(repo_folder).is_dir():
         return repo_folder
     print(f"Cloning {repo}...")
-    ensure_dir(args.repo_dir)
+    Path(args.repo_dir).mkdir(parents=True, exist_ok=True)
     repo_name = repo.split("/")[-1]
     repo_folder = f"{args.repo_dir}/{repo_name}"
     subprocess.run(["git", "clone", "--quiet", f"https://github.com/{repo}.git", repo_folder])
@@ -980,7 +980,7 @@ def download_card(ahdb_id):
         return temp_card
 
     ahdb_folder = f"{args.cache_dir}/ahdb"
-    ensure_dir(ahdb_folder)
+    Path(ahdb_folder).mkdir(parents=True, exist_ok=True)
     lang_code, _ = get_lang_code_region()
     filename = f"{ahdb_folder}/{lang_code}.json"
 
@@ -1148,7 +1148,7 @@ def read_url_map():
 
 
 def write_url_map() -> None:
-    ensure_dir(args.cache_dir)
+    Path(args.cache_dir).mkdir(parents=True, exist_ok=True)
     if url_map is not None:
         with open(args.url_file, "w", encoding="utf-8") as file:
             json_str = json.dumps(url_map, indent=2, sort_keys=True)
@@ -1195,7 +1195,7 @@ def decode_result_id(result_id):
 
 def download_deck_image(url) -> str:
     decks_folder = f"{args.cache_dir}/decks"
-    ensure_dir(decks_folder)
+    Path(decks_folder).mkdir(parents=True, exist_ok=True)
     url_id = get_en_url_id(url)
     if url_id is None:
         raise ValueError("URL not specified.")
@@ -1208,7 +1208,7 @@ def download_deck_image(url) -> str:
 
 def crop_card_image(result_id, deck_image_filename):
     cards_folder = f"{args.cache_dir}/cards"
-    ensure_dir(cards_folder)
+    Path(cards_folder).mkdir(parents=True, exist_ok=True)
     filename = f"{cards_folder}/{result_id}.png"
     if not os.path.isfile(filename):
         print(f"Cropping {result_id}.png...")
@@ -1637,7 +1637,8 @@ def process_encounter_cards(callback, **kwargs) -> None:
 
 def write_csv() -> None:
     data_dir = "SE_Generator/data"
-    recreate_dir(data_dir)
+    shutil.rmtree(data_dir, ignore_errors=True)
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
     for se_type in se_types:
         print(f"Writing {se_type}.csv...")
         filename = f"{data_dir}/{se_type}.csv"
