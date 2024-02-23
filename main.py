@@ -938,16 +938,10 @@ def get_se_card(result_id, card, metadata, image_filename, image_scale, image_mo
 from pathlib import Path
 
 
-
-from pathlib import Path
-
-
-
 def download_repo(repo_folder: str, repo: str) -> str:
     if Path(repo_folder).is_dir():
         return repo_folder
     print(f"Cloning {repo}...")
-    Path(args.repo_dir).mkdir(parents=True, exist_ok=True)
     Path(args.repo_dir).mkdir(parents=True, exist_ok=True)
     repo_name = repo.split("/")[-1]
     repo_folder = f"{args.repo_dir}/{repo_name}"
