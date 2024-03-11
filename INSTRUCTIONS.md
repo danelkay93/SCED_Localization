@@ -1,0 +1,10 @@
+- Prefer httpx over requests for making http requests.
+- Use types everywhere possible.
+- Extract "magic" numbers and strings into constants.
+- Use the logging module for logging.
+- Use the click module for command line interfaces.
+- Write tests using pytest, and additionally property tests using hypothesis.
+- Use pydantic for data validation.
+- Use classes and objects to encapsulate state and behavior when necessary.
+- Use the pathlib module for file and directory paths.
+- Perform changes in relatively small, manageable steps, and commit after each step.

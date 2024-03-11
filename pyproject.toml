@@ -17,6 +17,8 @@ beautifulsoup4 = "^4.12.3"
 bs4 = "^0.0.2"
 pillow = "^10.2.0"
 polib = "^1.2.0"
+pytest = "^8.0.1"
+setuptools = "^69.1.0"
 
 
 [build-system]

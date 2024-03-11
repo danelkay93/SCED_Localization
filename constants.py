@@ -1,5 +1,5 @@
 import os
-from enum import Enum, auto
+from enum import Enum, auto, StrEnum
 
 
 class SEProperties(Enum):
@@ -28,12 +28,14 @@ class LocationIcon(StrEnum):
     APOSTROPHE = "Quote"
     CLOVER = "Clover"
     STAR = "Star"
-    HEART = "Heart"
-    SPADE = "Spade"
     HOURGLASS = "Hourglass"
-    STAR = "Star"
     HEART = "Heart"
     SPADE = "Spade"
+    SLASH = "Slash",
+    CROSS = "Cross",
+    MOON = "Moon",
+    T = "T",
+    QUOTE = "Quote",
 
 SE_PROPERTY_COUNTS = {
     SEProperties.F_P_HEADER: 8,
@@ -987,3 +989,109 @@ REVERSED_CARD_CODES = [
     "83025b",
     "83026b",
 ]
+PROGRESS_LETTER_G_CARDS = [
+    "53029",
+    "53030",
+    "53031",
+    "53032",
+    "53033",
+    "53034",
+    "53035",
+    "53036",
+]
+
+PROGRESS_LETTER_E_CARDS = [
+    "04133a",
+    "04134a",
+    "04135",
+    "04136",
+    "04137a",
+    "04138",
+    "04139",
+    "04140",
+]
+
+PROGRESS_LETTER_C_CARDS = [
+    "03278",
+    "03279a",
+    "03279b",
+    "03280",
+    "03282",
+    "04125a",
+    "04126a",
+    "04127",
+    "04128a",
+    "04129",
+    "04130a",
+    "04131",
+    "04132",
+]
+
+SHELTER_POINT_CARDS = [
+    "08502",
+    "08503",
+    "08504",
+    "08505",
+    "08506",
+    "08507",
+    "08508",
+    "08509",
+    "08510",
+    "08511",
+    "08512",
+    "08513",
+    "08514",
+]
+
+BLOB_POINT_CARDS = [
+    "85039",
+    "85040",
+    "85041",
+    "85042",
+]
+MARKUP_PATTERNS = [
+    (r"\[action\]", "<act>"),
+    (r"\[reaction\]", "<rea>"),
+    (r"\[free\]", "<fre>"),
+    (r"\[fast\]", "<fre>"),
+    (r"\[willpower\]", "<wil>"),
+    (r"\[intellect\]", "<int>"),
+    (r"\[combat\]", "<com>"),
+    (r"\[agility\]", "<agi>"),
+    (r"\[wild\]", "<wild>"),
+    (r"\[guardian\]", "<gua>"),
+    (r"\[seeker\]", "<see>"),
+    (r"\[rogue\]", "<rog>"),
+    (r"\[mystic\]", "<mys>"),
+    (r"\[survivor\]", "<sur>"),
+    (r"\[skull\]", "<sku>"),
+    (r"\[cultist\]", "<cul>"),
+    (r"\[tablet\]", "<tab>"),
+    (r"\[elder_thing\]", "<mon>"),
+    (r"\[elder_sign\]", "<eld>"),
+    (r"\[auto_fail\]", "<ten>"),
+    (r"\[bless\]", "<ble>"),
+    (r"\[curse\]", "<cur>"),
+    (r"\[per_investigator\]", "<per>"),
+    (r"\[frost\]", "<fro>"),
+    (r"\[seal_a\]", "<seal1>"),
+    (r"\[seal_b\]", "<seal2>"),
+    (r"\[seal_c\]", "<seal3>"),
+    (r"\[seal_d\]", "<seal4>"),
+    (r"\[seal_e\]", "<seal5>"),
+]
+
+TRAITS_PATTERN = r"\[\[([^\]]*)\]\]"
+TRAITS_REPLACEMENT = r"<size 90%><t>\1</t><size 33%> <size 337%>"
+
+CHAOS_TOKENS = ["[skull]", "[cultist]", "[tablet]", "[elder_thing]"]
+CHAOS_MERGE_TOKENS = ["Skull", "Cultist", "Tablet", "ElderThing"]
+
+TRACKER_LABELS = {
+    "04277": "Current Depth",
+    "07274": "Spent Keys",
+    "83001": "Strength of the Abyss",
+    "83016": "Strength of the Abyss",
+}
+
+RETURN_TO_SCENARIO_CODES = ["rtnotz", "rtdwl", "rtptc", "rttfa", "rttcu"]

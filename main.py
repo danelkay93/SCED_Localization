@@ -6,12 +6,13 @@
 # Return to scenarios, missing swapping encounter set icons data
 # Promos, LOL, TSK, MTT, FOF, no translation
 
-import argparse
 import copy
 import csv
 import glob
 import importlib
 import inspect
+import json
+import logging
 import re
 import shutil
 import subprocess
@@ -20,18 +21,36 @@ import urllib.request
 import uuid
 import warnings
 from contextlib import suppress
+from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import click
 import dropbox
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 from PIL import Image
 
-from card import EnemyCard, Card
-from constants import *
+from card import Card, EnemyCard
+from constants import (
+    CHAOS_MERGE_TOKENS,
+    CHAOS_TOKENS,
+    LOCATION_ICON_MAP,
+    MARKUP_PATTERNS,
+    PROCESS_STEPS,
+    PROGRESS_LETTER_C_CARDS,
+    PROGRESS_LETTER_E_CARDS,
+    PROGRESS_LETTER_G_CARDS,
+    RETURN_TO_SCENARIO_CODES,
+    SCRIPT_ARGS,
+    TRACKER_LABELS,
+    TRAITS_PATTERN,
+    TRAITS_REPLACEMENT,
+)
 
-from constants import LOCATION_ICON_MAP
+logging.basicConfig(
+    filename="process.log", level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+)
 
 DOOM_COMMENT_CARD_CODE = "04212"
 
@@ -47,6 +66,7 @@ SE_FACTION_MAP = {
     # NOTE: This is not a real SE faction type, but ADB use 'mythos' for encounter cards so add it here to avoid errors.
     "mythos": "Mythos",
     None: "None",
+    None: "None",
 }
 
 SE_SUBTYPE_MAP = {
@@ -54,6 +74,7 @@ SE_SUBTYPE_MAP = {
     "basicweakness": "BasicWeakness",
     None: "None",
 }
+SE_PROPERTY_COUNTS = {}
 
 
 def generate_property_count_tuple(count):
@@ -63,25 +84,272 @@ def generate_property_count_tuple(count):
 # Suppress BeautifulSoup useless warnings.
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
 
-parser = argparse.ArgumentParser()
-for arg, options in SCRIPT_ARGS.items():
-    parser.add_argument(f"--{arg}", **options)
-args = parser.parse_args()
+
+@click.command()
+@click.option(
+    "--lang",
+    default="zh_CN",
+    type=click.Choice(SUPPORTED_LANGUAGES),
+    help="The language to translate into",
+)
+@click.option(
+    "--se-executable",
+    default=r"C:\Program Files\StrangeEons\bin\eons.exe",
+    help="The Strange Eons executable path",
+)
+@click.option(
+    "--se-preferences",
+    default=rf'{os.getenv("APPDATA")}\StrangeEons3\preferences',
+    help="The Strange Eons preferences file path",
+)
+@click.option(
+    "--filter", default="True", help="A Python expression filter for what cards to process"
+)
+@click.option(
+    "--repo-dir",
+    default="repos",
+    help="The directory to keep intermediate repositories during processing",
+)
+@click.option(
+    "--cache-dir",
+    default="cache",
+    help="The directory to keep intermediate resources during processing",
+)
+@click.option("--decks-dir", default="decks", help="The directory to keep translated deck images")
+@click.option(
+    "--ahdb-dir",
+    default="repos/arkhamdb-json-data",
+    help="The directory to the ArkhamDB json data repository",
+)
+@click.option(
+    "--mod-dir-primary", default="repos/SCED", help="The directory to the primary mod repository"
+)
+@click.option(
+    "--mod-dir-secondary",
+    default="repos/loadable-objects",
+    help="The directory to the secondary mod repository",
+)
+@click.option("--url-file", default="cache/urls.json", help="The file to keep the url mapping")
+@click.option(
+    "--dropbox-token", default=None, help="The dropbox token for uploading translated deck images"
+)
+@click.option(
+    "--new-link", is_flag=True, help="Whether to create new URL while uploading deck images"
+)
+@click.option(
+    "--step",
+    default=None,
+    type=click.Choice(PROCESS_STEPS),
+    help="The particular automation step to run",
+)
+def main(
+    lang,
+    se_executable,
+    se_preferences,
+    filter,
+    repo_dir,
+    cache_dir,
+    decks_dir,
+    ahdb_dir,
+    mod_dir_primary,
+    mod_dir_secondary,
+    url_file,
+    dropbox_token,
+    new_link,
+    step,
+):
+    try:
+        if step is None or step == "translate":
+            process_player_cards(translate_sced_object)
+            process_encounter_cards(translate_sced_object)
+            write_csv()
+
+        if step is None or step == "generate":
+            generate_images()
+
+        if step is None or step == "pack":
+            pack_images()
+
+        if step is None or step == "upload":
+            upload_images()
+
+        if step is None or step == "update":
+            process_player_cards(update_sced_card_object)
+            process_encounter_cards(update_sced_card_object, include_decks=True)
+            update_sced_files()
+    except Exception as e:
+        click.echo(f"An error occurred: {e}", err=True)
+        sys.exit(1)
 
 
-def get_lang_code_region():
+logging.basicConfig(
+    filename="process.log", level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+)
+
+
+class ProcessState(Enum):
+    INIT = auto()
+    TRANSLATE = auto()
+    GENERATE = auto()
+    PACK = auto()
+    UPLOAD = auto()
+    UPDATE = auto()
+    DONE = auto()
+
+
+def save_state(state: ProcessState) -> None:
+    with open("process_state.json", "w") as state_file:
+        json.dump({"state": state.name}, state_file)
+
+
+def load_state() -> ProcessState:
+    if os.path.exists("process_state.json"):
+        with open("process_state.json", "r") as state_file:
+            state_data = json.load(state_file)
+            return ProcessState[state_data["state"]]
+    return ProcessState.INIT
+
+
+def run_step(step_func: Callable, state: ProcessState, next_state: ProcessState) -> None:
+    try:
+        step_func()
+        save_state(next_state)
+    except Exception as e:
+        logging.error(f"An error occurred during {state.name}: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    current_state = load_state()
+    if current_state == ProcessState.INIT or current_state == ProcessState.TRANSLATE:
+        run_step(translate_cards, ProcessState.TRANSLATE, ProcessState.GENERATE)
+    if current_state <= ProcessState.GENERATE:
+        run_step(generate_images, ProcessState.GENERATE, ProcessState.PACK)
+    if current_state <= ProcessState.PACK:
+        run_step(pack_images, ProcessState.PACK, ProcessState.UPLOAD)
+    if current_state <= ProcessState.UPLOAD:
+        run_step(upload_images, ProcessState.UPLOAD, ProcessState.UPDATE)
+    if current_state <= ProcessState.UPDATE:
+        run_step(update_sced_files, ProcessState.UPDATE, ProcessState.DONE)
+    main(
+        lang,
+        se_executable,
+        se_preferences,
+        filter,
+        repo_dir,
+        cache_dir,
+        decks_dir,
+        ahdb_dir,
+        mod_dir_primary,
+        mod_dir_secondary,
+        url_file,
+        dropbox_token,
+        new_link,
+        step,
+    )
+
+
+def main(
+    lang,
+    se_executable,
+    se_preferences,
+    filter,
+    repo_dir,
+    cache_dir,
+    decks_dir,
+    ahdb_dir,
+    mod_dir_primary,
+    mod_dir_secondary,
+    url_file,
+    dropbox_token,
+    new_link,
+    step,
+):
+    try:
+        if step is None or step == "translate":
+            process_player_cards(translate_sced_object)
+            process_encounter_cards(translate_sced_object)
+            write_csv()
+
+        if step is None or step == "generate":
+            generate_images()
+
+        if step is None or step == "pack":
+            pack_images()
+
+        if step is None or step == "upload":
+            upload_images()
+
+        if step is None or step == "update":
+            process_player_cards(update_sced_card_object)
+            process_encounter_cards(update_sced_card_object, include_decks=True)
+            update_sced_files()
+    except Exception as e:
+        click.echo(f"An error occurred: {e}", err=True)
+        sys.exit(1)
+
+
+logging.basicConfig(
+    filename="process.log", level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+)
+
+
+class ProcessState(Enum):
+    INIT = auto()
+    TRANSLATE = auto()
+    GENERATE = auto()
+    PACK = auto()
+    UPLOAD = auto()
+    UPDATE = auto()
+    DONE = auto()
+
+
+def save_state(state: ProcessState) -> None:
+    with open("process_state.json", "w") as state_file:
+        json.dump({"state": state.name}, state_file)
+
+
+def load_state() -> ProcessState:
+    if os.path.exists("process_state.json"):
+        with open("process_state.json", "r") as state_file:
+            state_data = json.load(state_file)
+            return ProcessState[state_data["state"]]
+    return ProcessState.INIT
+
+
+def run_step(step_func: Callable, state: ProcessState, next_state: ProcessState) -> None:
+    try:
+        step_func()
+        save_state(next_state)
+    except Exception as e:
+        logging.error(f"An error occurred during {state.name}: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    current_state = load_state()
+    if current_state == ProcessState.INIT or current_state == ProcessState.TRANSLATE:
+        run_step(translate_cards, ProcessState.TRANSLATE, ProcessState.GENERATE)
+    if current_state <= ProcessState.GENERATE:
+        run_step(generate_images, ProcessState.GENERATE, ProcessState.PACK)
+    if current_state <= ProcessState.PACK:
+        run_step(pack_images, ProcessState.PACK, ProcessState.UPLOAD)
+    if current_state <= ProcessState.UPLOAD:
+        run_step(upload_images, ProcessState.UPLOAD, ProcessState.UPDATE)
+    if current_state <= ProcessState.UPDATE:
+        run_step(update_sced_files, ProcessState.UPDATE, ProcessState.DONE)
+    main()
+
+
+def get_lang_code_region() -> Tuple[str, str]:
     parts = args.lang.split("_")
     return parts[0], parts[1] if len(parts) > 1 else ""
 
-from pathlib import Path
-import sys
-import importlib
-from typing import Optional
 
 def import_lang_module() -> Optional[importlib.ModuleType]:
     """Import language dependent functions."""
     lang_code, region = get_lang_code_region()
-    lang_folder = Path('translations') / lang_code
+    lang_folder = Path("translations") / lang_code
     if str(lang_folder) not in sys.path:
         sys.path.insert(1, str(lang_folder))
     module_name = "transform"
@@ -90,7 +358,7 @@ def import_lang_module() -> Optional[importlib.ModuleType]:
     return importlib.import_module(module_name)
 
 
-def transform_lang(value):
+def transform_lang(value: str) -> str:
     # NOTE: Get the corresponding process function from stack frame. Therefore it's important to call this function from the correct 'get_se_xxx' function.
     module = import_lang_module()
     attr = inspect.stack()[1].function.replace("get_se_", "")
@@ -100,16 +368,16 @@ def transform_lang(value):
 
 
 # NOTE: ADB data may contain explicit null fields, that should be treated the same as missing.
-def card.get(key, default):
-    return default if card.get(key) is None else card.get(key)
+def get_card_value(card: dict, key: str, default: Any) -> Any:
+    return default if card.get(key) is None else card[key]
 
 
-def get_se_subtype(card):
+def get_se_subtype(card: dict) -> str:
     subtype = card.get("subtype_code")
     return SE_SUBTYPE_MAP[subtype]
 
 
-def get_se_faction(card, index, sheet):
+def get_se_faction(card: dict, index: int, sheet: int) -> str:
     if index == 0 and (subtype := get_se_subtype(card)) != "None":
         return subtype
 
@@ -120,9 +388,10 @@ def get_se_faction(card, index, sheet):
 
     return faction
 
+
 def get_se_cost(card):
     cost = card.get("cost", "-")
-        if cost == ADB_VAR_HEALTH:
+    if cost == ADB_VAR_HEALTH:
         cost = "X"
     return str(cost)
 
@@ -173,7 +442,13 @@ def get_se_slot(card, index):
 def get_se_health(card):
     is_enemy = card["type_code"] == "enemy"
     health = card.get("health", "-") if is_enemy or card.get("sanity") is not None else "None"
-    health = "X" if health == ADB_VAR_HEALTH and is_enemy else ADB_STAR_HEALTH if health == ADB_VAR_HEALTH else health
+    health = (
+        "X"
+        if health == ADB_VAR_HEALTH and is_enemy
+        else ADB_STAR_HEALTH
+        if health == ADB_VAR_HEALTH
+        else health
+    )
     return str(health)
 
 
@@ -224,7 +499,11 @@ def is_se_act_image_back(card):
 
 
 def is_se_bottom_line_transparent(card, sheet) -> bool:
-    return card["type_code"] == "enemy" or (sheet == 0 and (check_se_agenda_image_front(card) or is_se_act_image_front(card))) or (sheet == 1 and (is_se_agenda_image_back(card) or is_se_act_image_back(card)))
+    return (
+        card["type_code"] == "enemy"
+        or (sheet == 0 and (check_se_agenda_image_front(card) or is_se_act_image_front(card)))
+        or (sheet == 1 and (is_se_agenda_image_back(card) or is_se_act_image_back(card)))
+    )
 
 
 def get_se_property(card, sheet, property_func):
@@ -232,28 +511,40 @@ def get_se_property(card, sheet, property_func):
         return ""
     return property_func(card)
 
-get_se_illustrator = lambda card, sheet: get_se_property(card, sheet, lambda card: card.get("illustrator", ""))
-get_se_copyright = lambda card, sheet: get_se_property(card, sheet, lambda card: f'<cop> {PACK_YEAR_MAP.get(card.get("pack_code"), "")} FFG')
-get_se_pack = lambda card, sheet: get_se_property(card, sheet, lambda card: PACK_CODES_TO_NAMES[card["pack_code"]])
-get_se_pack_number = lambda card, sheet: get_se_property(card, sheet, lambda card: str(card.get("position", 0)))
+
+get_se_illustrator = lambda card, sheet: get_se_property(
+    card, sheet, lambda card: card.get("illustrator", "")
+)
+get_se_copyright = lambda card, sheet: get_se_property(
+    card, sheet, lambda card: f'<cop> {PACK_YEAR_MAP.get(card.get("pack_code"), "")} FFG'
+)
+get_se_pack = lambda card, sheet: get_se_property(
+    card, sheet, lambda card: PACK_CODES_TO_NAMES[card["pack_code"]]
+)
+get_se_pack_number = lambda card, sheet: get_se_property(
+    card, sheet, lambda card: str(card.get("position", 0))
+)
+
 
 def get_se_encounter_total(card, sheet):
     if is_se_bottom_line_transparent(card, sheet):
         return ""
     return str(ENCOUNTER_SET_TO_CARD_COUNT[card.get("encounter_code")])
 
+
 def get_se_encounter_number(card, sheet):
     if is_se_bottom_line_transparent(card, sheet):
         return ""
     return str(card.get("encounter_position", 0))
 
+
 def get_se_encounter(card, sheet):
-    if card.get("encounter_code") in ["vortex", "flood"] and card["code"] in SPECIAL_ENCOUNTER_CARDS:
+    if (
+        card.get("encounter_code") in ["vortex", "flood"]
+        and card["code"] in SPECIAL_ENCOUNTER_CARDS
+    ):
         encounter = "black_stars_rise"
     return ENCOUNTER_SETS_TO_NAMES[encounter]
-
-
-
 
 
 def get_se_encounter_front_visibility(card) -> str:
@@ -296,9 +587,7 @@ def get_se_shroud(card):
 def get_se_per_investigator(card) -> str:
     # NOTE: Location and act cards default to use per-investigator clue count, unless clue count is 0, variable (-2) or 'clues_fixed' is specified.
     if card["type_code"] in ["location", "act"]:
-        return (
-            "0" if card.get("clues", 0) in [0, -2] or card.get("clues_fixed", False) else "1"
-        )
+        return "0" if card.get("clues", 0) in [0, -2] or card.get("clues_fixed", False) else "1"
     return "1" if card.get("health_per_investigator", False) else "0"
 
 
@@ -308,43 +597,11 @@ def get_se_progress_number(card):
 
 def get_se_progress_letter(card) -> str:
     # NOTE: Special case agenda and act letters.
-    if card["code"] in [
-        "53029",
-        "53030",
-        "53031",
-        "53032",
-        "53033",
-        "53034",
-        "53035",
-        "53036",
-    ]:
+    if card["code"] in PROGRESS_LETTER_G_CARDS:
         return "g"
-    if card["code"] in [
-        "04133a",
-        "04134a",
-        "04135",
-        "04136",
-        "04137a",
-        "04138",
-        "04139",
-        "04140",
-    ]:
+    if card["code"] in PROGRESS_LETTER_E_CARDS:
         return "e"
-    if card["code"] in [
-        "03278",
-        "03279a",
-        "03279b",
-        "03280",
-        "03282",
-        "04125a",
-        "04126a",
-        "04127",
-        "04128a",
-        "04129",
-        "04130a",
-        "04131",
-        "04132",
-    ]:
+    if card["code"] in PROGRESS_LETTER_C_CARDS:
         return "c"
     return "a"
 
@@ -402,6 +659,7 @@ def get_se_traits(card):
 def get_se_markup(rule):
     markup = [
         (r"\[action\]", "<act>"),
+        (r"\[action\]", "<act>"),
         (r"\[reaction\]", "<rea>"),
         (r"\[free\]", "<fre>"),
         (r"\[fast\]", "<fre>"),
@@ -409,6 +667,7 @@ def get_se_markup(rule):
         (r"\[intellect\]", "<int>"),
         (r"\[combat\]", "<com>"),
         (r"\[agility\]", "<agi>"),
+        (r"\[wild\]", "<wild>"),
         (r"\[wild\]", "<wild>"),
         (r"\[guardian\]", "<gua>"),
         (r"\[seeker\]", "<see>"),
@@ -418,12 +677,14 @@ def get_se_markup(rule):
         (r"\[skull\]", "<sku>"),
         (r"\[cultist\]", "<cul>"),
         (r"\[tablet\]", "<tab>"),
+        (r"\[tablet\]", "<tab>"),
         (r"\[elder_thing\]", "<mon>"),
         (r"\[elder_sign\]", "<eld>"),
         (r"\[auto_fail\]", "<ten>"),
         (r"\[bless\]", "<ble>"),
         (r"\[curse\]", "<cur>"),
         (r"\[per_investigator\]", "<per>"),
+        (r"\[frost\]", "<fro>"),
         (r"\[frost\]", "<fro>"),
         (r"\[seal_a\]", "<seal1>"),
         (r"\[seal_b\]", "<seal2>"),
@@ -468,26 +729,17 @@ def get_se_back_rule(card):
 def get_se_chaos(rule, index):
     rule = [line.strip() for line in rule.split("\n")]
     rule = rule[1:]
-    tokens = ["[skull]", "[cultist]", "[tablet]", "[elder_thing]"]
-    merge_tokens = ["Skull", "Cultist", "Tablet", "ElderThing"]
-    token = tokens[index]
+    token = CHAOS_TOKENS[index]
     for line in rule:
         if token in line:
-            # NOTE: Find the greatest token this token is combined with.
-            max_index = index
-            for merge_token in tokens:
-                if merge_token in line:
-                    merge_index = tokens.index(merge_token)
-                    max_index = max(max_index, merge_index)
-
-            # NOTE: Remove tokens from the beginning of the line.
-            line = re.sub(r"[:：]", "", line)
-            for merge_token in tokens:
-                line = line.replace(merge_token, "")
-            line = line.strip()
-
-            merge = merge_tokens[max_index] if max_index > index else "None"
-            return line, merge
+            max_index = max(
+                (CHAOS_TOKENS.index(t) for t in CHAOS_TOKENS if t in line), default=index
+            )
+            line = re.sub(r"[:：]", "", line).strip()
+            for t in CHAOS_TOKENS:
+                line = line.replace(t, "")
+            merge = CHAOS_MERGE_TOKENS[max_index] if max_index > index else "None"
+            return line.strip(), merge
     return "", "None"
 
 
@@ -520,21 +772,11 @@ def get_se_back_chaos_merge(card, index):
 
 
 def get_se_tracker(card):
-    tracker = ""
-    if card["code"] == "04277":
-        tracker = "Current Depth"
-    elif card["code"] == "07274":
-        tracker = "Spent Keys"
-    elif card["code"] in ["83001", "83016"]:
-        tracker = "Strength of the Abyss"
-    return transform_lang(tracker)
+    return transform_lang(TRACKER_LABELS.get(card["code"], ""))
 
 
 def is_return_to_scenario(card):
-    return (
-        card["pack_code"] in ["rtnotz", "rtdwl", "rtptc", "rttfa", "rttcu"]
-        and card["type_code"] == "scenario"
-    )
+    return card["pack_code"] in RETURN_TO_SCENARIO_CODES and card["type_code"] == "scenario"
 
 
 def get_se_front_template(card) -> str:
@@ -619,15 +861,18 @@ def get_se_paragraph_line(card, text, flavor, index):
         return False
 
     # NOTE: Flavor is determined by 'blockquote' or 'i' tag.
-    def is_flavor(elem):
-        return elem.name in ["blockquote", "i"]
+    def extract_flavor_text(elem):
+        if elem.name in ["blockquote", "i"]:
+            return "".join(elem.stripped_strings)
+        return ""
 
     # NOTE: If there's explicit flavor text, add it before the main text to handle them together. Merge it with existing flavor text if possible.
     if flavor:
         soup = BeautifulSoup(text, HTML_PARSER)
         if len(soup.contents):
             flavor_elem = soup.contents[0]
-            if is_flavor(flavor_elem):
+            extracted_flavor = extract_flavor_text(flavor_elem)
+            if extracted_flavor:
                 flavor_elem.insert(0, f"{flavor}\n")
             else:
                 flavor_elem.insert_before(f"<blockquote><i>{flavor}</i></blockquote>\n")
@@ -708,24 +953,24 @@ def get_se_paragraph_line(card, text, flavor, index):
         return parsed_paragraphs[index]
     return "", "", ""
 
-def get_paragraph_line(card, text_key, flavor_key, index):
-    text = card.get(text_key, "")
-    flavor = card.get(flavor_key, "")
-    header, flavor, rule = get_se_paragraph_line(card, text, flavor, index)
-    return get_se_header(header), get_se_flavor(flavor), get_se_rule(rule)
 
-def get_location_icon(metadata, location_key, index):
-    icons = metadata.get(location_key, {}).get("connections", "")
-    return get_se_connection(icons, index)
+def get_paragraph_line(card, index):
+    text = card.get("text", "") if index == 0 else card.get("back_text", "")
+    flavor = card.get("flavor", "") if index == 0 else card.get("back_flavor", "")
+    return get_se_paragraph_line(card, text, flavor, index)
 
-def get_chaos(card, text_key, index):
-    rule = card.get(text_key, "")
-    rule, merge = get_se_chaos(rule, index)
-    return get_se_rule(rule), merge
+
+def get_location_icon(icon):
+    return LOCATION_ICON_MAP.get(icon, "None")
+
+
+def get_chaos(card, index):
+    rule = card.get("text", "") if index == 0 else card.get("back_text", "")
+    return get_se_chaos(rule, index)
+
 
 def get_se_front_paragraph_line(card, index):
     return get_paragraph_line(card, "text", "flavor", index)
-
 
 
 def get_se_front_paragraph_header(card, index):
@@ -810,7 +1055,6 @@ def get_se_front_location(metadata, index):
 
 def get_se_back_location(metadata, index):
     return get_location_icon(metadata, "locationBack", index)
-
 
 
 def get_se_connection(icons, index):
@@ -919,9 +1163,9 @@ def set_property_assignments(final_card, property_var_by_key) -> None:
             final_card[f"${property_name_pattern(i + 1)}"] = property_method(m_arg, *add_args)
 
 
-def get_se_card(result_id, card, metadata, image_filename, image_scale, image_move_x, image_move_y):
+def get_se_card(result_id, card, image_filename, image_scale, image_move_x, image_move_y):
     image_sheet = decode_result_id(result_id)[-1]
-    property_var_by_key = {prop: (card, image_sheet) if prop == SEProperties.FACTION else card for prop in SEProperties}
+    property_var_by_key = {prop: card for prop in SEProperties}
 
     assignments = {
         AssignmentType.STATIC: get_static_assignments(image_move_x, image_move_y, image_scale),
@@ -934,9 +1178,6 @@ def get_se_card(result_id, card, metadata, image_filename, image_scale, image_mo
     return final_card
 
 
-from pathlib import Path
-
-
 def download_repo(repo_folder: Path, repo: str) -> Path:
     if Path(repo_folder).is_dir():
         return repo_folder
@@ -944,7 +1185,17 @@ def download_repo(repo_folder: Path, repo: str) -> Path:
     Path(args.repo_dir).mkdir(parents=True, exist_ok=True)
     repo_name = repo.split("/")[-1]
     repo_folder = args.repo_dir / repo_name
-    subprocess.run(["git", "clone", "--quiet", f"https://github.com/{repo}.git", repo_folder])
+    try:
+        subprocess.run(
+            ["git", "clone", "--quiet", f"https://github.com/{repo}.git", str(repo_folder)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "clone", "--quiet", f"https://github.com/{repo}.git", repo_folder], check=True
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to clone {repo}: {e}", file=sys.stderr)
+        sys.exit(1)
     return repo_folder
 
 
@@ -979,133 +1230,127 @@ def download_card(ahdb_id):
 
     if not Path(filename).is_file():
         print("Downloading ArkhamDB data...")
+        try:
 
-        def load_folder(folder):
-            all_cards = {}
-            for data_filename in glob.glob(f"{folder}/**/*.json"):
-                with open(data_filename, encoding="utf-8") as file:
-                    folder_cards = json.loads(file.read())
-                    if not hasattr(folder_cards, "__iter__"):
-                        print(f"Error: {data_filename} contains non-iterable.")
-                        continue
-                    for folder_card in folder_cards:
-                        if not hasattr(folder_card, "keys"):
-                            print(f"Error: {data_filename} contains non-object.")
+            def load_folder(folder):
+                all_cards = {}
+                for data_filename in glob.glob(f"{folder}/**/*.json"):
+                    with open(data_filename, encoding="utf-8") as file:
+                        folder_cards = json.loads(file.read())
+                        if not hasattr(folder_cards, "__iter__"):
+                            print(f"Error: {data_filename} contains non-iterable.")
                             continue
-                        if "code" in folder_card:
-                            all_cards[folder_card["code"]] = folder_card
-                        else:
-                            print(
-                                f"Warning: {data_filename} contains {folder_card=} without 'code' property."
-                            )
-            return all_cards
+                        for folder_card in folder_cards:
+                            if not hasattr(folder_card, "keys"):
+                                print(f"Error: {data_filename} contains non-object.")
+                                continue
+                            if "code" in folder_card:
+                                all_cards[folder_card["code"]] = folder_card
+                            else:
+                                print(
+                                    f"Warning: {data_filename} contains {folder_card=} without 'code' property."
+                                )
+                return all_cards
 
-        repo_folder = download_repo(args.ahdb_dir, "Kamalisk/arkhamdb-json-data")
-        english = load_folder(f"{repo_folder}/pack")
-        translation = load_folder(f"{repo_folder}/translations/{lang_code}/pack")
+            repo_folder = download_repo(args.ahdb_dir, "Kamalisk/arkhamdb-json-data")
+            english = load_folder(f"{repo_folder}/pack")
+            translation = load_folder(f"{repo_folder}/translations/{lang_code}/pack")
 
-        # NOTE: Patch translation data while maintain the original properties as 'real_*' to match the API result.
-        for ecid, english_card in english.items():
-            if ecid in translation:
-                translation_card = translation[ecid]
-                for key, value in translation_card.items():
-                    if key in english_card and key != "code":
-                        english_card[f"real_{key}"] = english_card[key]
-                    english_card[key] = value
-        translation = english
+            # NOTE: Patch translation data while maintain the original properties as 'real_*' to match the API result.
+            for ecid, english_card in english.items():
+                if ecid in translation:
+                    translation_card = translation[ecid]
+                    for key, value in translation_card.items():
+                        if key in english_card and key != "code":
+                            english_card[f"real_{key}"] = english_card[key]
+                        english_card[key] = value
+            translation = english
 
-        # NOTE: Patch 'back_link' property to match the API result.
-        for cid, card in translation.items():
-            if card.get("back_link"):
-                card["linked_card"] = copy.deepcopy(translation[card["back_link"]])
+            # NOTE: Patch 'back_link' property to match the API result.
+            for cid, card in translation.items():
+                if card.get("back_link"):
+                    card["linked_card"] = copy.deepcopy(translation[card["back_link"]])
 
-        # NOTE: Patch 'duplicate_of' property to match the API result.
-        for cid, card in translation.items():
-            if card.get("duplicate_of"):
-                new_card = copy.deepcopy(translation[card["duplicate_of"]])
-                for key, value in card.items():
-                    new_card[key] = value
-                translation[cid] = new_card
+            # NOTE: Patch 'duplicate_of' property to match the API result.
+            for cid, card in translation.items():
+                if card.get("duplicate_of"):
+                    new_card = copy.deepcopy(translation[card["duplicate_of"]])
+                    for key, value in card.items():
+                        new_card[key] = value
+                    translation[cid] = new_card
 
-        # NOTE: Patch linked cards missing encounter set.
-        update_encounter_code(translation)
+            # NOTE: Patch linked cards missing encounter set.
+            update_encounter_code(translation)
 
-        with open(filename, "w", encoding="utf-8") as file:
-            json_str = json.dumps(list(translation.values()), indent=2, ensure_ascii=False)
-            file.write(json_str)
+            with open(filename, "w", encoding="utf-8") as file:
+                json_str = json.dumps(list(translation.values()), indent=2, ensure_ascii=False)
+                file.write(json_str)
+        except Exception as e:
+            print(f"Failed to download ArkhamDB data: {e}", file=sys.stderr)
+            sys.exit(1)
 
     if not len(ahdb):
         print("Processing ArkhamDB data...")
-
-        cards = []
-        with open(filename, encoding="utf-8") as file:
-            cards.extend(json.loads(file.read()))
-        # NOTE: Add taboo cards with -t suffix.
-        with open(f"translations/{lang_code}/taboo.json", encoding="utf-8") as file:
-            cards.extend(json.loads(file.read()))
-        for card in cards:
-            ahdb[card["code"]] = card
-        # NOTE: Add parallel cards with all front back combinations.
-        for cid in ["90001", "90008", "90017", "90024", "90037"]:
-            card = ahdb[cid]
-            old_id = card["alternate_of"]
-            old_card = ahdb[old_id]
-
-            pid = f"{old_id}-p"
-            pp_card = copy.deepcopy(card)
-            pp_card["code"] = pid
-            ahdb[pid] = pp_card
-
-            pfid = f"{old_id}-pf"
-            pf_card = copy.deepcopy(card)
-            pf_card["code"] = pfid
-            pf_card["back_text"] = old_card.get("back_text", "")
-            pf_card["back_flavor"] = old_card.get("back_flavor", "")
-            ahdb[pfid] = pf_card
-
-            properties = [
-                "pack_code",
-                "illustrator",
-                "position",
-                "text",
-                "flavor",
-                "health",
-                "sanity",
-                "skill_willpower",
-                "skill_intellect",
-                "skill_combat",
-                "skill_agility",
-            ]
-            pb_card = copy_card_properties(old_card, card, properties)
-            ahdb[pb_card["code"]] = pb_card
-
-        # NOTE: Patching special point attributes as separate fields.
-        points = {
-            "shelter": [
-                "08502",
-                "08503",
-                "08504",
-                "08505",
-                "08506",
-                "08507",
-                "08508",
-                "08509",
-                "08510",
-                "08511",
-                "08512",
-                "08513",
-                "08514",
-            ],
-            "blob": ["85039", "85040", "85041", "85042"],
-        }
-        for point_key, ids in points.items():
-            for cid in ids:
+        try:
+            cards = []
+            with open(filename, encoding="utf-8") as file:
+                cards.extend(json.loads(file.read()))
+            # NOTE: Add taboo cards with -t suffix.
+            with open(f"translations/{lang_code}/taboo.json", encoding="utf-8") as file:
+                cards.extend(json.loads(file.read()))
+            for card in cards:
+                ahdb[card["code"]] = card
+            # NOTE: Add parallel cards with all front back combinations.
+            for cid in ["90001", "90008", "90017", "90024", "90037"]:
                 card = ahdb[cid]
-                re_point = r"\s*<b>.*?(\d+)(</b>[.。]|[.。]</b>)\s*$"
-                match = re.search(re_point, card["text"])
-                point = int(match.group(1))
-                card[point_key] = point
-                card["text"] = re.sub(re_point, "", card["text"])
+                old_id = card["alternate_of"]
+                old_card = ahdb[old_id]
+
+                pid = f"{old_id}-p"
+                pp_card = copy.deepcopy(card)
+                pp_card["code"] = pid
+                ahdb[pid] = pp_card
+
+                pfid = f"{old_id}-pf"
+                pf_card = copy.deepcopy(card)
+                pf_card["code"] = pfid
+                pf_card["back_text"] = old_card.get("back_text", "")
+                pf_card["back_flavor"] = old_card.get("back_flavor", "")
+                ahdb[pfid] = pf_card
+
+                properties = [
+                    "pack_code",
+                    "illustrator",
+                    "position",
+                    "text",
+                    "flavor",
+                    "health",
+                    "sanity",
+                    "skill_willpower",
+                    "skill_intellect",
+                    "skill_combat",
+                    "skill_agility",
+                ]
+                pb_card = copy_card_properties(old_card, card, properties)
+                ahdb[pb_card["code"]] = pb_card
+
+            # NOTE: Patching special point attributes as separate fields.
+            points = {
+                "shelter": [SHELTER_POINT_CARDS],
+                "blob": ["85039", "85040", "85041", "85042"],
+            }
+            for point_key, ids in points.items():
+                for cid in ids:
+                    card = ahdb[cid]
+                    re_point = r"\s*<b>.*?(\d+)(</b>[.。]|[.。]</b>)\s*$"
+                    match = re.search(re_point, card["text"])
+                    point = int(match.group(1))
+                    card[point_key] = point
+                    card["text"] = re.sub(re_point, "", card["text"])
+        except Exception as e:
+            print(f"Failed to process ArkhamDB data: {e}", file=sys.stderr)
+            sys.exit(1)
+
     try:
         return ahdb[ahdb_id]
     except KeyError:
@@ -1372,7 +1617,7 @@ def translate_sced_card(url, deck_w, deck_h, deck_x, deck_y, is_front, card, met
 
 def translate_sced_card_object(card_obj, metadata, card) -> None:
     # Create a Card or EnemyCard object
-    if card['type'] == 'Enemy':
+    if card["type"] == "Enemy":
         card_instance = EnemyCard(card)
     else:
         card_instance = Card(card)
@@ -1509,8 +1754,8 @@ def translate_sced_object(sced_obj, metadata, card, _1, _2) -> None:
 
 
 def is_translatable(ahdb_id):
-    # NOTE: Skip minicards.
-    return "-m" not in ahdb_id
+    # NOTE: Skip minicards and promos.
+    return "-m" not in ahdb_id and not ahdb_id.startswith("z")
 
 
 def process_player_cards(callback: Callable) -> None:
